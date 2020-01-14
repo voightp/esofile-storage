@@ -1,7 +1,7 @@
 import traceback
-
-from sqlalchemy import (create_engine, exc)
-from esofile_reader import EsoFile
+import pandas as pd
+from sqlalchemy import (create_engine, exc, and_)
+from esofile_reader import EsoFile, Variable
 from storage.models import DBEsoFile, DBVariable, Base
 from utils.utils import merge_df_values
 from sqlalchemy.orm import sessionmaker
@@ -29,13 +29,20 @@ class Storage:
     session
         sqlalchemy orm session object.
 
+    Constants
+    ---------
+    SEPARATOR
+        A string to specify separator in values data blob.
 
     """
+    SEPARATOR = "\t"
 
     def __init__(self, path: str = None, echo: bool = True, **kwargs):
         if not path:
             # create database in memory
             path = ":memory:"
+
+        # TODO create Config class to hold database details
 
         # create SQL base objects
         self.engine = create_engine(f'sqlite:///{path}', echo=echo, **kwargs)
@@ -50,7 +57,7 @@ class Storage:
         for key in file.available_intervals:
             df = file.as_df(key)
             # parse results DataFrame to store values as blob
-            sr = merge_df_values(df, separator="\t")
+            sr = merge_df_values(df, separator=self.SEPARATOR)
 
             for index, values in sr.iteritems():
                 id_, interval, key, variable, units = index
@@ -84,9 +91,52 @@ class Storage:
                       f"\nINTEGRITY ERROR"
                       f"\n{traceback.format_exc()}")
 
+    def fetch_file(self, file_name: str) -> EsoFile:
+        """ Fetch results file from database. """
+        q = self.session.query(DBEsoFile).filter(DBEsoFile.file_name == file_name)
+        if q.count() > 0:
+            return q[0]
+
+    def fetch_variables(self, file_name: str, variables: List[Variable]) -> list:
+        """
+        Fetch variables
+
+        Arguments
+        ---------
+        file_name : str
+            A specific results file,
+        variables : list of (Variable)
+            A list of Variable namedtuples
+
+        Notes
+        -----
+        'Variable' name tuple can be imported from 'esofile_reader' package.
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        columns = [
+            f"{DBVariable.__tablename__}.var_id",
+            f"{DBVariable.__tablename__}.interval",
+            f"{DBVariable.__tablename__}.key",
+            f"{DBVariable.__tablename__}.variable",
+            f"{DBVariable.__tablename__}.units"
+        ]
+
+        statement = f"""SELECT {', '.join(columns)} FROM {DBVariable.__tablename__}
+         JOIN {DBEsoFile.__tablename__}
+         ON {DBEsoFile.__tablename__}.id={DBVariable.__tablename__}.file_id
+         WHERE {DBEsoFile.__tablename__}.file_name='{file_name}'
+        """
+
+        # TODO add variable filter
+
+        rs = self.execute_statement(statement)
+        return rs
+
     def execute_statement(self, statement: str) -> List[Any]:
         """ Execute sql statement. """
         with self.engine.connect() as con:
             rs = con.execute(statement)
-            data = rs.fetchall()
-            return data
+            return rs.fetchall()
