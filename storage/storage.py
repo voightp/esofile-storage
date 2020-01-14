@@ -1,8 +1,11 @@
-from sqlalchemy import (create_engine)
+import traceback
+
+from sqlalchemy import (create_engine, exc)
 from esofile_reader import EsoFile
 from storage.models import DBEsoFile, DBVariable, Base
+from utils.utils import merge_df_values
 from sqlalchemy.orm import sessionmaker
-from typing import List, Union
+from typing import List, Union, Tuple, Any
 from datetime import datetime
 
 
@@ -41,26 +44,47 @@ class Storage:
 
         self.session = Session()
 
-    def store_file_variables(self, file: EsoFile):
+    def _create_db_variables(self, file: EsoFile, db_file: DBEsoFile):
         """ Store output variables. """
-        pass
+        db_variables = []
+        for key in file.available_intervals:
+            df = file.as_df(key)
+            # parse results DataFrame to store values as blob
+            sr = merge_df_values(df, separator="\t")
 
-    def store_files(self, files: Union[List[EsoFile], EsoFile]):
+            for index, values in sr.iteritems():
+                id_, interval, key, variable, units = index
+                db_variables.append(
+                    DBVariable(var_id=id_, interval=interval, key=key,
+                               variable=variable, units=units, values=values,
+                               file=db_file)
+                )
+        return db_variables
+
+    def store_files(self, files: Union[List[EsoFile], EsoFile]) -> None:
         """ Store result files. """
         files = files if isinstance(files, list) else [files]
-        db_files = []
         for file in files:
-            db_files.append(
-                DBEsoFile(
-                    file_path=file.file_path,
-                    file_name=file.file_name,
-                    file_timestamp=datetime.fromtimestamp(file.file_timestamp),
-                    complete=file.complete)
+            db_file = DBEsoFile(
+                file_path=file.file_path,
+                file_name=file.file_name,
+                file_timestamp=datetime.fromtimestamp(file.file_timestamp),
+                complete=file.complete
             )
-        self.session.add_all(db_files)
-        self.session.commit()
+            db_variables = self._create_db_variables(file, db_file)
 
-    def execute_statement(self, statement: str):
+            # add each file separately to avoid complete
+            # failure when only one of files would fail
+            self.session.add(db_file)
+            self.session.add_all(db_variables)
+            try:
+                self.session.commit()
+            except exc.IntegrityError:
+                print(f"Cannot add file {db_file}!"
+                      f"\nINTEGRITY ERROR"
+                      f"\n{traceback.format_exc()}")
+
+    def execute_statement(self, statement: str) -> List[Any]:
         """ Execute sql statement. """
         with self.engine.connect() as con:
             rs = con.execute(statement)
