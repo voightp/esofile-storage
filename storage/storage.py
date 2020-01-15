@@ -3,7 +3,7 @@ import pandas as pd
 from sqlalchemy import (create_engine, exc, and_)
 from esofile_reader import EsoFile, Variable
 from storage.models import DBEsoFile, DBVariable, Base
-from utils.utils import merge_df_values
+from utils.utils import merge_df_values, destringify_df
 from sqlalchemy.orm import sessionmaker
 from typing import List, Union, Tuple, Any
 from datetime import datetime
@@ -97,7 +97,25 @@ class Storage:
         if q.count() > 0:
             return q[0]
 
-    def fetch_variables(self, file_name: str, variables: List[Variable]) -> list:
+    @staticmethod
+    def _construct_variable_condition(variable: Variable):
+        """
+        Create ORM sql query for results variable.
+
+        Filter condition is applied only if the value is specified.
+
+        Example
+        -------
+        Variable(interval=None, key='Level 1', variable='Temperature', units='C')
+
+        will fetch variable with key='Level 1', variable='Temperature', units='C'
+        for all intervals.
+
+        """
+
+        return {k: v for k, v in variable._asdict().items() if v}
+
+    def fetch_variables(self, file_name: str, variables: List[Variable]) -> pd.DataFrame:
         """
         Fetch variables
 
@@ -116,24 +134,35 @@ class Storage:
         -------
         pd.DataFrame
         """
-        columns = [
-            f"{DBVariable.__tablename__}.var_id",
-            f"{DBVariable.__tablename__}.interval",
-            f"{DBVariable.__tablename__}.key",
-            f"{DBVariable.__tablename__}.variable",
-            f"{DBVariable.__tablename__}.units"
-        ]
 
-        statement = f"""SELECT {', '.join(columns)} FROM {DBVariable.__tablename__}
-         JOIN {DBEsoFile.__tablename__}
-         ON {DBEsoFile.__tablename__}.id={DBVariable.__tablename__}.file_id
-         WHERE {DBEsoFile.__tablename__}.file_name='{file_name}'
-        """
+        # ORM query
+        orm_columns = (
+            DBVariable.var_id, DBVariable.interval, DBVariable.key,
+            DBVariable.variable, DBVariable.units, DBVariable.values
+        )
 
-        # TODO add variable filter
+        # no need for JOIN, ORM handles this automatically
+        q = self.session \
+            .query(*orm_columns) \
+            .filter(DBEsoFile.file_name == file_name)
 
-        rs = self.execute_statement(statement)
-        return rs
+        rs = []
+        for variable in variables:
+            cond = self._construct_variable_condition(variable)
+            sq = q.filter_by(**cond)
+            if sq.count() > 0:
+                rs.extend(sq.all())
+
+        # convert results into pd.DataFrame, values are stored in rows
+        df = pd.DataFrame(rs)
+        df.set_index(["var_id", "interval", "key", "variable", "units"], inplace=True)
+        df = destringify_df(df, separator=self.SEPARATOR)
+
+        # transform df to get data as columns
+        df = df.T
+        df.astype(float, copy=False)
+
+        return df
 
     def execute_statement(self, statement: str) -> List[Any]:
         """ Execute sql statement. """
