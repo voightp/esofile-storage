@@ -153,16 +153,17 @@ class Storage:
             if sq.count() > 0:
                 rs.extend(sq.all())
 
-        # convert results into pd.DataFrame, values are stored in rows
-        df = pd.DataFrame(rs)
-        df.set_index(["var_id", "interval", "key", "variable", "units"], inplace=True)
-        df = destringify_df(df, separator=self.SEPARATOR)
+        if rs:
+            # convert results into pd.DataFrame, values are stored in rows
+            df = pd.DataFrame(rs)
+            df.set_index(["var_id", "interval", "key", "variable", "units"], inplace=True)
+            df = destringify_df(df, separator=self.SEPARATOR)
 
-        # transform df to get data as columns
-        df = df.T
-        df.astype(float, copy=False)
+            # transform df to get data as columns
+            df = df.T
+            df.astype(float, copy=False)
 
-        return df
+            return df
 
     def execute_statement(self, statement: str) -> List[Any]:
         """ Execute sql statement. """
