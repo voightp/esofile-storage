@@ -1,5 +1,8 @@
 import traceback
 import pandas as pd
+import os
+import contextlib
+
 from sqlalchemy import (create_engine, exc, and_)
 from esofile_reader import EsoFile, Variable
 from storage.models import DBEsoFile, DBVariable, Base
@@ -45,11 +48,23 @@ class Storage:
         # TODO create Config class to hold database details
 
         # create SQL base objects
+        self.path = path
         self.engine = create_engine(f'sqlite:///{path}', echo=echo, **kwargs)
-        Base.metadata.create_all(self.engine)
-        Session = sessionmaker(bind=self.engine)
+        self.create_tables()
 
-        self.session = Session()
+    @contextlib.contextmanager
+    def session_scope(self):
+        """Provide a transactional scope around a series of operations."""
+        Session = sessionmaker(bind=self.engine)
+        session = Session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise Exception
+        finally:
+            session.close()
 
     def _create_db_variables(self, file: EsoFile, db_file: DBEsoFile):
         """ Store output variables. """
@@ -80,22 +95,17 @@ class Storage:
             )
             db_variables = self._create_db_variables(file, db_file)
 
-            # add each file separately to avoid complete
-            # failure when only one of files would fail
-            self.session.add(db_file)
-            self.session.add_all(db_variables)
-            try:
-                self.session.commit()
-            except exc.IntegrityError:
-                print(f"Cannot add file {db_file}!"
-                      f"\nINTEGRITY ERROR"
-                      f"\n{traceback.format_exc()}")
+            with self.session_scope() as session:
+                # failure when only one of files would fail
+                session.add(db_file)
+                session.add_all(db_variables)
 
     def fetch_file(self, file_name: str) -> EsoFile:
         """ Fetch results file from database. """
-        q = self.session.query(DBEsoFile).filter(DBEsoFile.file_name == file_name)
-        if q.count() > 0:
-            return q[0]
+        with self.session_scope() as session:
+            q = session.query(DBEsoFile).filter(DBEsoFile.file_name == file_name)
+            if q.count() > 0:
+                return q[0]
 
     @staticmethod
     def _construct_variable_condition(variable: Variable):
@@ -142,9 +152,10 @@ class Storage:
         )
 
         # no need for JOIN, ORM handles this automatically
-        q = self.session \
-            .query(*orm_columns) \
-            .filter(DBEsoFile.file_name == file_name)
+        with self.session_scope() as session:
+            q = session \
+                .query(*orm_columns) \
+                .filter(DBEsoFile.file_name == file_name)
 
         rs = []
         for variable in variables:
@@ -170,3 +181,18 @@ class Storage:
         with self.engine.connect() as con:
             rs = con.execute(statement)
             return rs.fetchall()
+
+    def delete_db(self):
+        """ Delete database file from file system. """
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+    def create_tables(self):
+        """ Create all tables. """
+        Base.metadata.create_all(self.engine)
+
+    def drop_tables(self):
+        """ Drop all tables. """
+        Base.metadata.drop_all()
