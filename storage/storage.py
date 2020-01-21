@@ -6,7 +6,7 @@ import contextlib
 from sqlalchemy import (create_engine, exc, and_)
 from esofile_reader import EsoFile, Variable
 from storage.models import DBEsoFile, DBVariable, Base
-from utils.utils import merge_df_values, destringify_df
+from utils.utils import merge_df_values, destringify_df, profile
 from sqlalchemy.orm import sessionmaker
 from typing import List, Union, Tuple, Any
 from datetime import datetime
@@ -125,6 +125,7 @@ class Storage:
 
         return {k: v for k, v in variable._asdict().items() if v}
 
+    @profile
     def fetch_variables(self, file_name: str, variables: List[Variable]) -> pd.DataFrame:
         """
         Fetch variables
@@ -171,7 +172,6 @@ class Storage:
             df = destringify_df(df, separator=self.SEPARATOR)
 
             # transform df to get data as columns
-            df = df.T
             df.astype(float, copy=False)
 
             return df
